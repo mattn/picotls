@@ -19,17 +19,29 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  */
-#include <arpa/inet.h>
+#ifdef _WIN32
+# ifndef _WIN32_WINNT
+#  define _WIN32_WINNT 0x0600
+# endif
+#endif
+
 #include <assert.h>
 #include <errno.h>
 #include <getopt.h>
 #include <inttypes.h>
-#include <netdb.h>
-#include <netinet/in.h>
+#ifndef _WIN32
+# include <arpa/inet.h>
+# include <netdb.h>
+# include <netinet/in.h>
+# include <sys/select.h>
+# include <sys/socket.h>
+typedef int sockopt_t;
+#else
+# include <ws2tcpip.h>
+typedef char sockopt_t;
+#endif
 #include <stdio.h>
 #include <string.h>
-#include <sys/select.h>
-#include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <openssl/err.h>
@@ -38,6 +50,39 @@
 #include <openssl/pem.h>
 #include "picotls.h"
 #include "picotls/openssl.h"
+
+#ifdef _WIN32
+static void _win32_perror(const char* detail)
+{
+    LPSTR buf = NULL, p;
+
+    DWORD e = WSAGetLastError();
+    if (e == 0) {
+        fprintf(stderr, "No errors: %s\n", detail);
+        return;
+    }
+
+    FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER |
+        FORMAT_MESSAGE_FROM_SYSTEM |
+        FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL,
+        e,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        (LPSTR)&buf,
+        0,
+        NULL);
+    p = buf;
+    while (*p) {
+        if (*p == '\r' || *p == '\n') *p = ' ';
+        p++;
+    }
+    fprintf(stderr, "%s: %s\n", buf, detail);
+    LocalFree(buf);
+}
+#undef perror
+#define perror(x) _win32_perror(x)
+#endif
 
 static int write_all(int fd, const uint8_t *data, size_t len)
 {
@@ -180,7 +225,8 @@ Exit:
 
 static int run_server(struct sockaddr *sa, socklen_t salen, ptls_context_t *ctx)
 {
-    int listen_fd, conn_fd, on = 1;
+    int listen_fd, conn_fd;
+    sockopt_t on = 1;
 
     if ((listen_fd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
         perror("socket(2) failed");
@@ -253,6 +299,11 @@ static void usage(const char *cmd)
 
 int main(int argc, char **argv)
 {
+#ifdef _WIN32
+    WSADATA wsaData;
+    WSAStartup(MAKEWORD(2, 0), &wsaData);
+#endif
+
     ERR_load_crypto_strings();
     OpenSSL_add_all_algorithms();
 #if !defined(OPENSSL_NO_ENGINE)
